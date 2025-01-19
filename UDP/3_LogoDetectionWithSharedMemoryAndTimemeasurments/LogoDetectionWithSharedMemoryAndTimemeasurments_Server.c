@@ -17,7 +17,8 @@
 #include <stdbool.h>
 #include <signal.h>
 
-const char* PathToObjectDetectionModel = "ObjectDetectionModel.py";
+const char* PathToObjectDetectionModel = "/home/raspberry/Desktop/YOLO/Ultralytics_YOLOv8/LogoRecognitionFromCamera_With_SharedMemory2.py";
+//const char* PathToObjectDetectionModel = "ObjectDetectionModel.py";
 
 //Time **************************************************************/
 #define NUM_MEASUREMENTS 250
@@ -27,17 +28,8 @@ static long gEndTimestamp_Sec;
 static long gEndTimestamp_Nsec;
 static int timeMeasurementIndex = 0;
 
-typedef struct {
-	long seconds;
-	long nanoseconds;
-} gTimeMeasurement;
-
-gTimeMeasurement gAccessTime_SharedMemory[NUM_MEASUREMENTS];
-gTimeMeasurement gRoundTripTime_UDP[NUM_MEASUREMENTS];
-
 long getTimestamp_Sec();
 long getTimestamp_Nsec();
-void calculateAndPrintAverage(gTimeMeasurement *timeArray, int numMeasurements);
 //*******************************************************************/
 
 //Shared Memory *****************************************************/
@@ -66,6 +58,8 @@ void detachSharedMemoryAndClosePipe();
 #define PORT 8080
 #define BUFFER_SIZE 1024
 
+uint8_t fixedData[4] = {0x1, 0x1, 0x1, 0x1};//Pseudo data for the measurement
+
 int gFd_Sock;
 struct sockaddr_in gServerAddr, gClientAddr;
 char gResvDataBuffer[BUFFER_SIZE];
@@ -76,7 +70,7 @@ void initializeServerInfo();
 int bindSocketToAdress();
 int receiveMsg();
 int sendHelloMsg();
-//int detectLogo();
+
 int sendMsg();
 int sendLogos();
 //*******************************************************************/
@@ -86,86 +80,47 @@ int main()
     pid_t parentProcessId = getpid();
     pid_t childProcessId = fork();
 
-    if (childProcessId < 0)
-	{
+    if (childProcessId < 0) {
     	perror("Error with fork.\n");
     	exit(EXIT_FAILURE);
 	}
-    else if(childProcessId == 0)
-    {
+    else if(childProcessId == 0) {
         if (execlp("python3", "python3", PathToObjectDetectionModel, (char*)NULL) == -1)
 		{
 			perror("Error executing Python script.\n");
 			exit(EXIT_FAILURE);
 		}
     }
-	else
-	{
+	else {
         if (initializeFIFOAndSharedMemory() != 0)
         {
             printf("Error with initializeFIFOAndSharedMemory().\n");
             exit(EXIT_FAILURE);
         }
 
-        ///////////////////////////////////////////////////////////////////
-        if (createSocketFileDescriptor() != 0)
-        {
+        if (createSocketFileDescriptor() != 0) {
             exit(EXIT_FAILURE);
         }
 
         initializeServerInfo();
 
-        if(bindSocketToAdress() != 0)
-        {
-            exit(EXIT_FAILURE);
-        }
-
-        if(receiveMsg() != 0)//HelloMsg from Client
-        {
-            exit(EXIT_FAILURE);
-        }
-
-        if(sendHelloMsg() != 0)
-        {
+        if(bindSocketToAdress() != 0) {
             exit(EXIT_FAILURE);
         }
         ///////////////////////////////////////////////////////////////////
 
-		while(timeMeasurementIndex < NUM_MEASUREMENTS)
+		while(true)
         {
-            gReadBytes_FIFO = read(gFd_FIFO, gMsgBuffer_FIFO, sizeof(gMsgBuffer_FIFO));
+			if(receiveMsg() != 0) {
+            	exit(EXIT_FAILURE);
+        	}
 
-            if (gMsgBuffer_FIFO[0] == 'D')
-            {
-				//Measures the difference between the time required by the
-				//child process to write the results of the object recognition model
-				//to the shared memory and the time until they are read out here
-                gEndTimestamp_Sec = getTimestamp_Sec();
-                gEndTimestamp_Nsec = getTimestamp_Nsec();
+			if(strstr((const char *)gResvDataBuffer, "Logos") != NULL) {
+				if(sendLogos() != 0) {
+                	exit(EXIT_FAILURE);
+            	}
+			}
 
-				gAccessTime_SharedMemory[timeMeasurementIndex].seconds = gEndTimestamp_Sec - gLogoDetection->timestampMemoryInsertion_Sec;
-				gAccessTime_SharedMemory[timeMeasurementIndex].nanoseconds = gEndTimestamp_Nsec - gLogoDetection->timestampMemoryInsertion_Nsec;
-
-				//the timestamps for the round trip time are located in the sendLogos and receiveMsg functions
-                if(sendLogos() != 0)
-                {
-                    break;
-                }
-
-				if(receiveMsg() != 0)
-        		{
-            		break;
-        		}
-
-				gRoundTripTime_UDP[timeMeasurementIndex].seconds = gEndTimestamp_Sec - gStartTimestamp_Sec;
-				gRoundTripTime_UDP[timeMeasurementIndex].nanoseconds = gEndTimestamp_Nsec - gStartTimestamp_Nsec;
-
-				timeMeasurementIndex++;
-            }
-            else
-            {
-                break;
-            }
         }
     
         detachSharedMemoryAndClosePipe();
@@ -175,13 +130,6 @@ int main()
             perror("Error killing the process");
 		}
 
-		printf("\n%d measurements:\n", timeMeasurementIndex);
-		printf("\nAccess Time for Shared Memory:n");
-		calculateAndPrintAverage(gAccessTime_SharedMemory, timeMeasurementIndex);
-
-		printf("\nRound Trip Time for UDP Connection:\n");
-		calculateAndPrintAverage(gRoundTripTime_UDP, timeMeasurementIndex);
-		
 	    return 0;
 	}
 }
@@ -195,11 +143,8 @@ int receiveMsg()
 	result = recvfrom(gFd_Sock, (char *)gResvDataBuffer, BUFFER_SIZE, MSG_WAITALL, ( struct sockaddr *) &gClientAddr, &len);
 	if (result > 0)
 	{
-		gEndTimestamp_Sec = getTimestamp_Sec();
-		gEndTimestamp_Nsec = getTimestamp_Nsec();
-
-		gResvDataBuffer[result] = '\0';
-		printf("Client: %s\n", gResvDataBuffer);
+		//gResvDataBuffer[result] = '\0';
+		//printf("Client: %s\n", gResvDataBuffer);
 		errorFlag = 0;
 	}
 	else if (result == 0)
@@ -226,14 +171,12 @@ int sendLogos()
         return errorFlag;
     }
 
-    memcpy(gSendDataBuffer, gLogoDetection->logos, sizeof(gLogoDetection->logos));
+    memcpy(gSendDataBuffer, fixedData, sizeof(fixedData));
 
-	gStartTimestamp_Sec = getTimestamp_Sec();
-    gStartTimestamp_Nsec = getTimestamp_Nsec();
-    result = sendto(gFd_Sock, (const char *)gSendDataBuffer, sizeof(gLogoDetection->logos), MSG_CONFIRM, (const struct sockaddr *) &gClientAddr, len);
-	if(result == sizeof(gLogoDetection->logos))
+    result = sendto(gFd_Sock, (const char *)gSendDataBuffer, sizeof(fixedData), MSG_CONFIRM, (const struct sockaddr *) &gClientAddr, len);
+	if(result == sizeof(fixedData))
 	{
-		printf("Message sent.\n");
+		//printf("Message sent.\n");
 		errorFlag = 0;
 	}
 	else
@@ -242,31 +185,6 @@ int sendLogos()
 	}
 
 	return errorFlag;
-}
-
-void calculateAndPrintAverage(gTimeMeasurement *timeArray, int numMeasurements)
-{
-    unsigned long totalSeconds = 0;
-    unsigned long totalNanoseconds = 0;
-
-    for (int i = 0; i < numMeasurements; i++)
-	{
-        totalSeconds += timeArray[i].seconds;
-        totalNanoseconds += timeArray[i].nanoseconds;
-    }
-
-    //Normalize nanoseconds if greater than or equal to 1 second
-    while (totalNanoseconds >= 1000000000)
-	{
-        totalNanoseconds -= 1000000000;
-        totalSeconds++;
-    }
-
-    long averageSeconds = totalSeconds / numMeasurements;
-    long averageNanoseconds = totalNanoseconds / numMeasurements;
-
-    printf("Total time: %lu seconds, %lu nanoseconds\n", totalSeconds, totalNanoseconds);
-    printf("Average time: %ld seconds, %ld nanoseconds\n", averageSeconds, averageNanoseconds);
 }
 
 void detachSharedMemoryAndClosePipe()
@@ -398,42 +316,6 @@ int sendHelloMsg()
 
 	return errorFlag;
 }
-
-/*
-int detectLogo()
-{
-	int errorFlag = -1;
-
-	FILE *read_fp;
-	int chars_read;
-
-	memset(gSendDataBuffer, '\0', sizeof(gSendDataBuffer));
-
-	read_fp = popen("python3 /home/raspberry/Desktop/YOLO/Ultralytics_YOLOv8/LogoRecognitionFromPicture.py", "r");
-
-	if(read_fp != NULL)
-	{
-		chars_read = fread(gSendDataBuffer, sizeof(char), BUFFER_SIZE - 1, read_fp);
-		if (chars_read > 0)
-		{
-			gSendDataBuffer[chars_read] = '\0';
-			printf("Data received is: %s", gSendDataBuffer);
-			errorFlag = 0;
-		}
-
-		if (pclose(read_fp) == -1)
-		{
-			printf("pclose() failed.\n");
-			errorFlag = -1;
-		}
-	}
-	else
-	{
-		printf("popen() failed.\n");
-	}
-	return errorFlag;
-}
-*/
 
 int sendMsg()
 {
