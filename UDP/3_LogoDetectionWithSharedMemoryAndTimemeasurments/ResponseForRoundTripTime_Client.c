@@ -9,13 +9,29 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <time.h>
-
+#include <stdbool.h>
 //Time **************************************************************/
-static long gTimestamp_Sec;
-static long gTimestamp_Nsec;
+#define NUM_MEASUREMENTS 1002
+static long gStartTimestamp_Sec = 0;
+static long gStartTimestamp_Nsec = 0;
+static long gEndTimestamp_Sec = 0;
+static long gEndTimestamp_Nsec = 0;
+static long roundTripTime_Sec = 0;
+static long roundTripTime_Nsec = 0;
+static int timeMeasurementIndex = 0;
+FILE *csvFile = NULL;
 
-long getTimestamp_Sec();
-long getTimestamp_Nsec();
+long getTimestamp_Sec() {
+	struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec;
+}
+
+long getTimestamp_Nsec(void) {
+	struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_nsec;
+}
 //*******************************************************************/
 
 //UDP ***************************************************************/	
@@ -27,7 +43,7 @@ long getTimestamp_Nsec();
 struct sockaddr_in gServerAddr;
 char gResvDataBuffer[BUFFER_SIZE];
 int gFd_Sock;
-int gLogos[NUM_LOGOS];
+uint8_t gLogos[NUM_LOGOS];
 	
 int createSocketFileDescriptor();
 int initializeServerInfo();
@@ -49,43 +65,52 @@ int main()
         exit(EXIT_FAILURE);
     }
     
-    if(sendHelloMsg() != 0)
-    {
-        exit(EXIT_FAILURE);
-    }
-
-    if(receiveMsg() != 0)
-    {
-        exit(EXIT_FAILURE);
-    }
-
     int timeout = 5 * 60;
     time_t lastLogosReceivedTime = time(NULL);
 
-    char *message = "Okay";
-    while(1)
-    {
-        if(receiveLogos() == 0)
-        {
+    char *RequestMessage = "Logos";
+
+	csvFile = fopen("RTT_UDP.csv", "w");
+
+    if (csvFile == NULL) {
+    	perror("Failed to open file");
+        exit(EXIT_FAILURE);
+    }
+	fprintf(csvFile, "Nanoseconds\n");
+
+    while(timeMeasurementIndex < NUM_MEASUREMENTS) {
+		gStartTimestamp_Sec = getTimestamp_Sec();
+        gStartTimestamp_Nsec = getTimestamp_Nsec();
+		if (sendMsg(RequestMessage) != 0) {
+            break;
+        }
+		timeMeasurementIndex++;
+
+        if(receiveLogos() == 0) {
+			gEndTimestamp_Sec = getTimestamp_Sec();
+		    gEndTimestamp_Nsec = getTimestamp_Nsec();
+
+			roundTripTime_Sec = gEndTimestamp_Sec - gStartTimestamp_Sec;
+        	roundTripTime_Nsec = gEndTimestamp_Nsec - gStartTimestamp_Nsec;
+
+            if (roundTripTime_Nsec < 0) {
+                roundTripTime_Sec -= 1;
+                roundTripTime_Nsec += 1000000000;
+            }
+
+            fprintf(csvFile, "%ld\n", roundTripTime_Sec * 1000000000 + roundTripTime_Nsec);
+
             lastLogosReceivedTime = time(NULL);
 
-            //For the measurement of the round trip time, the output to the console is prevented
-            /*
             printf("Received logos array:\n");
             for (int i = 0; i < NUM_LOGOS; i++)
             {
                 printf("logo[%d] = %d\n", i, gLogos[i]);
             }
-            */
+            
         }
-        else
-        {
+        else {
             printf("Error receiving logos. Exiting loop.\n");
-            break;
-        }
-
-        if (sendMsg(message) != 0)
-        {
             break;
         }
 
@@ -129,9 +154,9 @@ int receiveLogos()
 	result = recvfrom(gFd_Sock, (char *)gResvDataBuffer, BUFFER_SIZE, MSG_WAITALL, (struct sockaddr *) &gServerAddr, &len);
 	if (result > 0)
 	{
-        if (result == sizeof(int) * NUM_LOGOS)
+        if (result == sizeof(uint8_t) * NUM_LOGOS)
         {
-            memcpy(gLogos, gResvDataBuffer, sizeof(int) * NUM_LOGOS);
+            memcpy(gLogos, gResvDataBuffer, sizeof(uint8_t) * NUM_LOGOS);
             errorFlag = 0;
         }
         else
@@ -241,18 +266,4 @@ int receiveMsg()
 	}
 
 	return errorFlag;
-}
-
-long getTimestamp_Sec()
-{
-	struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec;
-}
-
-long getTimestamp_Nsec(void)
-{
-	struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_nsec;
 }
